@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: opti-logistix-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+    environment:
+      - API_ENV=dev
+    restart: unless-stopped
+    # Development modunda reload ile çalıştır
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+  dashboard:
+    image: python:3.9-slim
+    container_name: opti-logistix-dashboard
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./src/dashboard:/app
+    # Basit HTTP sunucusu ile statik dosyaları sun
+    command: python3 -m http.server 3000
+    restart: unless-stopped
