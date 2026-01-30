@@ -121,16 +121,18 @@ class GraphLoader:
             # Temel uzunluk
             base_length = data.get('length', 100)
             
-            # Ağırlık hesabı: Mesafe x (1 + Hasar x Ceza Katsayısı)
-            data['weight'] = base_length * (1 + data['damage_prob'] * 15)
-            
-            # Hasar seviyesi
+            # Hasar seviyesi ve ağırlık cezası
             if data['damage_prob'] > 0.8:
                 data['damage_level'] = 'critical'
+                weight_factor = 1000000  # Kırmızı yollardan kaçın
             elif data['damage_prob'] > 0.5:
                 data['damage_level'] = 'moderate'
+                weight_factor = 50
             else:
                 data['damage_level'] = 'safe'
+                weight_factor = 1
+            
+            data['weight'] = base_length * weight_factor
         
         logger.info(f"Veri işlendi: {len(hospitals)} hastane, {len(depots)} depo")
         return G, hospitals, depots
@@ -216,18 +218,35 @@ class GraphLoader:
             total_length = 0
             total_damage = 0
             
-            for i, node in enumerate(path):
-                node_data = G.nodes[node]
-                path_coords.append({
-                    'lat': node_data.get('y', 0),
-                    'lon': node_data.get('x', 0)
-                })
+            # İlk noktayı ekle
+            start_node_data = G.nodes[path[0]]
+            path_coords.append({
+                'lat': start_node_data.get('y', 0),
+                'lon': start_node_data.get('x', 0)
+            })
+            
+            for i in range(len(path) - 1):
+                u = path[i]
+                v = path[i + 1]
                 
-                if i < len(path) - 1:
-                    next_node = path[i + 1]
-                    edge_data = list(G[node][next_node].values())[0]
-                    total_length += edge_data.get('length', 0)
-                    total_damage += edge_data.get('damage_prob', 0)
+                # Kenar verisini al (en iyi kenarı seç)
+                edge_data = min(G[u][v].values(), key=lambda x: x.get(weight, x.get('length', 0)))
+                
+                total_length += edge_data.get('length', 0)
+                total_damage += edge_data.get('damage_prob', 0)
+                
+                if 'geometry' in edge_data:
+                    # Geometri varsa ara noktaları kullan ((lon, lat) formatında gelir)
+                    # İlk nokta u ile aynıdır, atlıyoruz
+                    for lon, lat in list(edge_data['geometry'].coords)[1:]:
+                        path_coords.append({'lat': lat, 'lon': lon})
+                else:
+                    # Geometri yoksa düz çizgi, hedef düğümü ekle
+                    v_data = G.nodes[v]
+                    path_coords.append({
+                        'lat': v_data.get('y', 0),
+                        'lon': v_data.get('x', 0)
+                    })
             
             avg_damage = total_damage / max(1, len(path) - 1)
             

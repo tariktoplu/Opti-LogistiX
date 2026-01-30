@@ -159,15 +159,19 @@ class AppState:
             base_damage = random.random() * self.damage_multiplier
             data['damage_prob'] = min(1.0, base_damage)
             
-            base_length = data.get('length', 100)
-            data['weight'] = base_length * (1 + data['damage_prob'] * 15)
-            
             if data['damage_prob'] > 0.8:
                 data['damage_level'] = 'critical'
+                # Kırmızı (kritik) yolları kullanmamak için ağırlığı çok artır
+                weight_factor = 1000000
             elif data['damage_prob'] > 0.5:
                 data['damage_level'] = 'moderate'
+                weight_factor = 50
             else:
                 data['damage_level'] = 'safe'
+                weight_factor = 1
+            
+            base_length = data.get('length', 100)
+            data['weight'] = base_length * weight_factor
         
         # Agent güncelle
         damage_scores = {
