@@ -1,14 +1,9 @@
 /**
- * Opti-Logistix Dashboard Application
- * Afet Lojistik Karar Destek Sistemi
+ * Opti-Logistix Dashboard - OSMnx Entegrasyonu
+ * Gerçek harita verileri ile çalışan versiyon
  */
 
-// =============================================================================
-// Configuration
-// =============================================================================
 const API_BASE_URL = 'http://localhost:8000/api/v1';
-const MAP_CENTER = [41.02, 29.02]; // Istanbul
-const MAP_ZOOM = 14;
 
 // =============================================================================
 // State
@@ -16,10 +11,10 @@ const MAP_ZOOM = 14;
 const state = {
     map: null,
     layers: {
-        edges: null,
-        damageHeat: null,
+        roads: null,
         route: null,
-        vehicles: null,
+        hospitals: null,
+        depots: null,
         zones: null
     },
     markers: {
@@ -27,25 +22,41 @@ const state = {
         end: null
     },
     currentScenario: null,
-    selecting: null, // 'start' or 'end'
-    graphData: { nodes: [], edges: [] }
+    selecting: null,
+    mapBounds: null
 };
 
 // =============================================================================
 // Initialization
 // =============================================================================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    showLoading(true);
+
+    // API'den harita sınırlarını al
+    try {
+        const boundsRes = await fetch(`${API_BASE_URL}/map/bounds`);
+        state.mapBounds = await boundsRes.json();
+    } catch (e) {
+        state.mapBounds = { center_lat: 40.9907, center_lon: 29.0230 };
+    }
+
     initMap();
     initEventListeners();
-    loadInitialData();
+    await loadMapData();
     startClock();
+
+    showLoading(false);
 });
 
 function initMap() {
-    // Create Leaflet map
+    const center = [
+        state.mapBounds.center_lat || 40.9907,
+        state.mapBounds.center_lon || 29.0230
+    ];
+
     state.map = L.map('map', {
-        center: MAP_CENTER,
-        zoom: MAP_ZOOM,
+        center: center,
+        zoom: 15,
         zoomControl: true
     });
 
@@ -55,132 +66,148 @@ function initMap() {
         maxZoom: 19
     }).addTo(state.map);
 
-    // Initialize layer groups
-    state.layers.edges = L.layerGroup().addTo(state.map);
+    // Layer groups
+    state.layers.roads = L.layerGroup().addTo(state.map);
     state.layers.route = L.layerGroup().addTo(state.map);
-    state.layers.vehicles = L.layerGroup().addTo(state.map);
+    state.layers.hospitals = L.layerGroup().addTo(state.map);
+    state.layers.depots = L.layerGroup().addTo(state.map);
     state.layers.zones = L.layerGroup().addTo(state.map);
 
-    // Map click handler
     state.map.on('click', handleMapClick);
 }
 
 function initEventListeners() {
-    // Scenario buttons
     document.querySelectorAll('.scenario-btn').forEach(btn => {
         btn.addEventListener('click', () => handleScenarioSelect(btn.dataset.scenario));
     });
 
-    // Route buttons
     document.getElementById('btnCalculateRoute').addEventListener('click', calculateRoute);
     document.getElementById('btnClearRoute').addEventListener('click', clearRoute);
 
-    // Input focus handlers
     document.getElementById('startPoint').addEventListener('focus', () => { state.selecting = 'start'; });
     document.getElementById('endPoint').addEventListener('focus', () => { state.selecting = 'end'; });
 }
 
-async function loadInitialData() {
-    showLoading(true);
+// =============================================================================
+// Data Loading
+// =============================================================================
+async function loadMapData() {
     try {
-        // Load graph data
-        const [nodesRes, edgesRes, resourcesRes] = await Promise.all([
-            fetch(`${API_BASE_URL}/graph/nodes`),
-            fetch(`${API_BASE_URL}/graph/edges`),
-            fetch(`${API_BASE_URL}/resources`)
-        ]);
+        // Yolları yükle
+        const edgesRes = await fetch(`${API_BASE_URL}/map/edges`);
+        const edgesData = await edgesRes.json();
+        drawRoads(edgesData.features);
 
-        state.graphData.nodes = (await nodesRes.json()).nodes;
-        state.graphData.edges = (await edgesRes.json()).edges;
-        const resources = (await resourcesRes.json());
+        // Düğümleri yükle (hastane, depo)
+        const nodesRes = await fetch(`${API_BASE_URL}/map/nodes`);
+        const nodesData = await nodesRes.json();
+        drawSpecialNodes(nodesData);
 
-        // Draw edges on map
-        drawEdges(state.graphData.edges);
-
-        // Update resources panel
+        // Kaynakları yükle
+        const resourcesRes = await fetch(`${API_BASE_URL}/resources`);
+        const resources = await resourcesRes.json();
         updateResourcesPanel(resources);
 
-        showToast('success', 'Sistem hazır');
+        // İstatistikleri güncelle
+        const statsRes = await fetch(`${API_BASE_URL}/stats`);
+        const stats = await statsRes.json();
+        updateStats(stats);
+
+        showToast('success', `Harita yüklendi: ${stats.nodes} kavşak, ${stats.edges} yol`);
+
     } catch (error) {
-        console.error('Load error:', error);
-        showToast('error', 'Veri yüklenemedi. Demo mod aktif.');
-        loadDemoData();
+        console.error('Veri yükleme hatası:', error);
+        showToast('error', 'Harita yüklenemedi. API çalışıyor mu?');
     }
-    showLoading(false);
 }
 
-function loadDemoData() {
-    // Create demo edges for visualization
-    const demoEdges = [];
-    for (let i = 0; i < 5; i++) {
-        for (let j = 0; j < 5; j++) {
-            const lat1 = 41.0 + i * 0.01;
-            const lon1 = 29.0 + j * 0.01;
+// =============================================================================
+// Map Drawing
+// =============================================================================
+function drawRoads(edges) {
+    state.layers.roads.clearLayers();
 
-            if (j < 4) {
-                demoEdges.push({
-                    from: { lat: lat1, lon: lon1 },
-                    to: { lat: lat1, lon: lon1 + 0.01 },
-                    damage: 0
-                });
-            }
-            if (i < 4) {
-                demoEdges.push({
-                    from: { lat: lat1, lon: lon1 },
-                    to: { lat: lat1 + 0.01, lon: lon1 },
-                    damage: 0
-                });
-            }
-        }
-    }
-    state.graphData.edges = demoEdges;
-    drawEdges(demoEdges);
+    edges.forEach(edge => {
+        if (!edge.path || edge.path.length < 2) return;
 
-    // Demo resources
-    updateResourcesPanel({
-        resources: [
-            { resource_id: 'AMB-001', resource_type: 'ambulance', status: 'available' },
-            { resource_id: 'AMB-002', resource_type: 'ambulance', status: 'available' },
-            { resource_id: 'FIRE-001', resource_type: 'fire_truck', status: 'available' }
-        ]
+        const color = getDamageColor(edge.damage_prob || 0);
+        const weight = getLineWeight(edge.highway);
+
+        const polyline = L.polyline(edge.path, {
+            color: color,
+            weight: weight,
+            opacity: 0.8,
+            smoothFactor: 1
+        });
+
+        // Popup
+        const popupContent = `
+            <div style="font-size: 12px;">
+                <strong>${edge.name || 'Yol'}</strong><br>
+                Uzunluk: ${(edge.length || 0).toFixed(0)} m<br>
+                Tip: ${edge.highway || 'road'}<br>
+                Hasar: ${((edge.damage_prob || 0) * 100).toFixed(0)}%
+            </div>
+        `;
+        polyline.bindPopup(popupContent);
+
+        state.layers.roads.addLayer(polyline);
     });
 }
 
-// =============================================================================
-// Map Functions
-// =============================================================================
-function drawEdges(edges) {
-    state.layers.edges.clearLayers();
+function drawSpecialNodes(nodesData) {
+    state.layers.hospitals.clearLayers();
+    state.layers.depots.clearLayers();
 
-    edges.forEach(edge => {
-        const color = getDamageColor(edge.damage || 0);
-        const weight = edge.damage > 0.5 ? 4 : 2;
+    // Hastaneler
+    nodesData.hospitals.forEach(node => {
+        const marker = L.marker([node.lat, node.lon], {
+            icon: L.divIcon({
+                className: 'custom-marker hospital-marker',
+                html: '🏥',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            })
+        });
+        marker.bindPopup(`<strong>${node.name || 'Hastane'}</strong>`);
+        state.layers.hospitals.addLayer(marker);
+    });
 
-        const line = L.polyline(
-            [[edge.from.lat, edge.from.lon], [edge.to.lat, edge.to.lon]],
-            { color, weight, opacity: 0.7 }
-        );
-
-        line.bindPopup(`
-            <strong>Yol Durumu</strong><br>
-            Hasar: ${((edge.damage || 0) * 100).toFixed(0)}%<br>
-            Seviye: ${getDamageLevel(edge.damage || 0)}
-        `);
-
-        state.layers.edges.addLayer(line);
+    // Depolar
+    nodesData.depots.forEach(node => {
+        const marker = L.marker([node.lat, node.lon], {
+            icon: L.divIcon({
+                className: 'custom-marker depot-marker',
+                html: '📦',
+                iconSize: [30, 30],
+                iconAnchor: [15, 15]
+            })
+        });
+        marker.bindPopup(`<strong>${node.name || 'Depo'}</strong>`);
+        state.layers.depots.addLayer(marker);
     });
 }
 
 function getDamageColor(damage) {
-    if (damage < 0.2) return '#10b981'; // Green
-    if (damage < 0.5) return '#f59e0b'; // Yellow
-    return '#ef4444'; // Red
+    if (damage > 0.8) return '#e74c3c';  // Kritik - Kırmızı
+    if (damage > 0.5) return '#f1c40f';  // Orta - Sarı
+    if (damage > 0.2) return '#f39c12';  // Düşük - Turuncu
+    return '#2ecc71';  // Güvenli - Yeşil
 }
 
-function getDamageLevel(damage) {
-    if (damage < 0.2) return 'Güvenli';
-    if (damage < 0.5) return 'Riskli';
-    return 'Hasarlı';
+function getLineWeight(highway) {
+    const weights = {
+        'motorway': 4,
+        'trunk': 4,
+        'primary': 3,
+        'secondary': 2.5,
+        'tertiary': 2,
+        'residential': 1.5,
+        'unclassified': 1
+    };
+
+    if (Array.isArray(highway)) highway = highway[0];
+    return weights[highway] || 1.5;
 }
 
 function handleMapClick(e) {
@@ -188,20 +215,18 @@ function handleMapClick(e) {
 
     if (state.selecting === 'start') {
         setMarker('start', lat, lng);
-        document.getElementById('startPoint').value = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+        document.getElementById('startPoint').value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
     } else if (state.selecting === 'end') {
         setMarker('end', lat, lng);
-        document.getElementById('endPoint').value = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+        document.getElementById('endPoint').value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
     }
 }
 
 function setMarker(type, lat, lng) {
-    // Remove existing marker
     if (state.markers[type]) {
         state.map.removeLayer(state.markers[type]);
     }
 
-    // Create marker icon
     const icon = L.divIcon({
         className: 'custom-marker',
         html: type === 'start' ? '📍' : '🎯',
@@ -212,67 +237,10 @@ function setMarker(type, lat, lng) {
     state.markers[type] = L.marker([lat, lng], { icon }).addTo(state.map);
 }
 
-function drawRoute(routeData) {
-    state.layers.route.clearLayers();
-
-    if (!routeData.path_coords || routeData.path_coords.length < 2) return;
-
-    const coords = routeData.path_coords.map(c => [c.lat, c.lon]);
-
-    // Draw route line
-    const routeLine = L.polyline(coords, {
-        color: '#3b82f6',
-        weight: 5,
-        opacity: 0.9,
-        lineCap: 'round',
-        lineJoin: 'round'
-    });
-
-    // Add glow effect
-    const glowLine = L.polyline(coords, {
-        color: '#3b82f6',
-        weight: 12,
-        opacity: 0.3,
-        lineCap: 'round'
-    });
-
-    state.layers.route.addLayer(glowLine);
-    state.layers.route.addLayer(routeLine);
-
-    // Fit bounds
-    state.map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
-}
-
-function drawDamageZones(zones) {
-    state.layers.zones.clearLayers();
-
-    zones.forEach(zone => {
-        const color = zone.score > 0.7 ? '#ef4444' :
-            zone.score > 0.4 ? '#f59e0b' : '#10b981';
-
-        const circle = L.circle([zone.center.lat, zone.center.lon], {
-            radius: zone.radius_m,
-            color: color,
-            fillColor: color,
-            fillOpacity: 0.2,
-            weight: 2
-        });
-
-        circle.bindPopup(`
-            <strong>${zone.id}</strong><br>
-            Hasar Seviyesi: ${zone.level}<br>
-            Skor: ${(zone.score * 100).toFixed(0)}%
-        `);
-
-        state.layers.zones.addLayer(circle);
-    });
-}
-
 // =============================================================================
-// Scenario Functions
+// Scenario Management
 // =============================================================================
 async function handleScenarioSelect(scenario) {
-    // Update button states
     document.querySelectorAll('.scenario-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.scenario === scenario);
     });
@@ -293,22 +261,23 @@ async function handleScenarioSelect(scenario) {
         const result = await response.json();
         state.currentScenario = result;
 
-        // Update UI
         document.getElementById('scenarioStatus').textContent =
             `Senaryo: ${scenario.toUpperCase()} (M${result.magnitude})`;
 
-        // Fetch and display damage map
-        await loadDamageMap();
+        // Yolları yeniden çiz (hasarla)
+        await refreshRoads();
 
-        // Load recommendations
+        // Önerileri yükle
         await loadRecommendations();
 
-        showToast('warning', `${scenario.toUpperCase()} senaryosu aktif`);
+        // İstatistikleri güncelle
+        await updateStatsFromAPI();
+
+        showToast('warning', `${scenario.toUpperCase()} senaryosu aktif!`);
+
     } catch (error) {
-        console.error('Scenario error:', error);
+        console.error('Senaryo hatası:', error);
         showToast('error', 'Senaryo yüklenemedi');
-        // Demo mode
-        applyDemoScenario(scenario);
     }
     showLoading(false);
 }
@@ -319,19 +288,14 @@ async function clearScenario() {
     } catch (e) { }
 
     state.currentScenario = null;
-    state.layers.zones.clearLayers();
+    document.getElementById('scenarioStatus').textContent = 'Senaryo: Normal';
 
-    // Reset edges to green
-    state.graphData.edges.forEach(e => e.damage = 0);
-    drawEdges(state.graphData.edges);
+    await refreshRoads();
 
-    // Clear stats
     document.getElementById('damagedRoads').textContent = '0';
     document.getElementById('damagedBridges').textContent = '0';
-    document.getElementById('scenarioStatus').textContent = 'Senaryo: Normal';
     document.getElementById('recommendationCount').textContent = '0';
 
-    // Clear recommendations
     document.getElementById('recommendations').innerHTML = `
         <div class="recommendation-empty">
             <span class="empty-icon">🔍</span>
@@ -342,74 +306,18 @@ async function clearScenario() {
     showToast('success', 'Senaryo temizlendi');
 }
 
-async function loadDamageMap() {
+async function refreshRoads() {
     try {
-        const response = await fetch(`${API_BASE_URL}/damage-map`);
-        if (!response.ok) throw new Error();
-
-        const data = await response.json();
-
-        // Update edge damages
-        const damageMap = {};
-        data.edges.forEach(e => { damageMap[e.id] = e.damage; });
-
-        state.graphData.edges.forEach(edge => {
-            const id = edge.id || `${edge.from.lat}_${edge.to.lat}`;
-            edge.damage = damageMap[id] || Math.random() * 0.5;
-        });
-
-        drawEdges(state.graphData.edges);
-        drawDamageZones(data.zones);
-
-        // Update stats
-        document.getElementById('damagedRoads').textContent = data.stats.damaged_edges;
-        document.getElementById('damagedBridges').textContent = data.stats.critical_edges;
-
+        const edgesRes = await fetch(`${API_BASE_URL}/map/edges`);
+        const edgesData = await edgesRes.json();
+        drawRoads(edgesData.features);
     } catch (e) {
-        console.error('Damage map error:', e);
-        applyRandomDamage();
+        console.error('Yol yenileme hatası:', e);
     }
 }
 
-function applyDemoScenario(scenario) {
-    const damageRate = scenario === 'hafif' ? 0.15 :
-        scenario === 'orta' ? 0.35 : 0.6;
-
-    let damagedCount = 0;
-    state.graphData.edges.forEach(edge => {
-        if (Math.random() < damageRate) {
-            edge.damage = Math.random() * 0.5 + 0.3;
-            damagedCount++;
-        } else {
-            edge.damage = Math.random() * 0.2;
-        }
-    });
-
-    drawEdges(state.graphData.edges);
-
-    // Update stats
-    document.getElementById('damagedRoads').textContent = damagedCount;
-    document.getElementById('damagedBridges').textContent = Math.floor(damagedCount / 10);
-
-    // Demo zones
-    drawDamageZones([
-        { id: 'Z0_CRITICAL', center: { lat: 41.02, lon: 29.02 }, radius_m: 500, score: 0.9, level: 'critical' },
-        { id: 'Z1_SEVERE', center: { lat: 41.02, lon: 29.02 }, radius_m: 1500, score: 0.6, level: 'severe' }
-    ]);
-
-    // Demo recommendations
-    addDemoRecommendations(scenario);
-}
-
-function applyRandomDamage() {
-    state.graphData.edges.forEach(edge => {
-        edge.damage = Math.random() * 0.6;
-    });
-    drawEdges(state.graphData.edges);
-}
-
 // =============================================================================
-// Route Functions
+// Route Calculation
 // =============================================================================
 async function calculateRoute() {
     const startInput = document.getElementById('startPoint').value;
@@ -432,8 +340,7 @@ async function calculateRoute() {
                 start: { lat: startLat, lon: startLon },
                 end: { lat: endLat, lon: endLon },
                 vehicle_type: 'ambulance',
-                urgency: 0.8,
-                method: 'astar'
+                urgency: 0.8
             })
         });
 
@@ -447,37 +354,39 @@ async function calculateRoute() {
             showToast('error', result.message || 'Rota bulunamadı');
         }
     } catch (error) {
-        console.error('Route error:', error);
-        // Demo route
-        createDemoRoute(startLat, startLon, endLat, endLon);
+        console.error('Rota hatası:', error);
+        showToast('error', 'Rota hesaplanamadı');
     }
     showLoading(false);
 }
 
-function createDemoRoute(startLat, startLon, endLat, endLon) {
-    const steps = 5;
-    const path_coords = [];
+function drawRoute(routeData) {
+    state.layers.route.clearLayers();
 
-    for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        path_coords.push({
-            lat: startLat + (endLat - startLat) * t + (Math.random() - 0.5) * 0.002,
-            lon: startLon + (endLon - startLon) * t + (Math.random() - 0.5) * 0.002
-        });
-    }
+    if (!routeData.path_coords || routeData.path_coords.length < 2) return;
 
-    const demoRoute = {
-        path_coords,
-        estimated_time: 12.5,
-        distance_km: 2.3,
-        risk_score: 0.25,
-        method: 'astar',
-        is_optimal: true
-    };
+    const coords = routeData.path_coords.map(c => [c.lat, c.lon]);
 
-    drawRoute(demoRoute);
-    updateRouteInfo(demoRoute);
-    showToast('success', 'Demo rota oluşturuldu');
+    // Glow effect
+    const glowLine = L.polyline(coords, {
+        color: '#00bcd4',
+        weight: 12,
+        opacity: 0.3
+    });
+
+    // Main route
+    const routeLine = L.polyline(coords, {
+        color: '#00bcd4',
+        weight: 5,
+        opacity: 0.9,
+        lineCap: 'round',
+        lineJoin: 'round'
+    });
+
+    state.layers.route.addLayer(glowLine);
+    state.layers.route.addLayer(routeLine);
+
+    state.map.fitBounds(routeLine.getBounds(), { padding: [50, 50] });
 }
 
 function updateRouteInfo(route) {
@@ -487,7 +396,7 @@ function updateRouteInfo(route) {
     document.getElementById('routeTime').textContent = `${route.estimated_time.toFixed(1)} dk`;
     document.getElementById('routeDistance').textContent = `${route.distance_km.toFixed(2)} km`;
     document.getElementById('routeRisk').textContent = `${(route.risk_score * 100).toFixed(0)}%`;
-    document.getElementById('routeMethod').textContent = route.method.toUpperCase();
+    document.getElementById('routeMethod').textContent = 'DIJKSTRA';
 }
 
 function clearRoute() {
@@ -510,38 +419,31 @@ function clearRoute() {
 }
 
 // =============================================================================
-// Recommendations
+// Stats & Recommendations
 // =============================================================================
+async function updateStatsFromAPI() {
+    try {
+        const statsRes = await fetch(`${API_BASE_URL}/stats`);
+        const stats = await statsRes.json();
+        updateStats(stats);
+    } catch (e) { }
+}
+
+function updateStats(stats) {
+    const damageStats = stats.damage_levels || {};
+    document.getElementById('damagedRoads').textContent =
+        (damageStats.moderate || 0) + (damageStats.critical || 0);
+    document.getElementById('damagedBridges').textContent = damageStats.critical || 0;
+}
+
 async function loadRecommendations() {
     try {
         const response = await fetch(`${API_BASE_URL}/recommendations`);
         const data = await response.json();
         displayRecommendations(data.recommendations);
     } catch (e) {
-        console.error('Recommendations error:', e);
+        console.error('Öneri hatası:', e);
     }
-}
-
-function addDemoRecommendations(scenario) {
-    const recs = [
-        {
-            type: 'warning',
-            priority: 'high',
-            message: 'Merkez bölgede kritik hasar tespit edildi'
-        },
-        {
-            type: 'route',
-            priority: 'medium',
-            message: 'AMB-001 için alternatif rota önerisi: Sahil yolu üzerinden 8 dk tasarruf'
-        },
-        {
-            type: 'allocation',
-            priority: scenario === 'siddetli' ? 'high' : 'medium',
-            message: 'Batı Hastanesi kapasitesi uygun. Ambulansları yönlendirin.'
-        }
-    ];
-
-    displayRecommendations(recs);
 }
 
 function displayRecommendations(recs) {
@@ -570,18 +472,16 @@ function displayRecommendations(recs) {
 }
 
 function getTypeIcon(type) {
-    const icons = { warning: '⚠️', route: '🧭', allocation: '📦' };
-    return icons[type] || '💡';
+    return { warning: '⚠️', route: '🧭', allocation: '📦' }[type] || '💡';
 }
 
 // =============================================================================
-// Resources
+// Resources Panel
 // =============================================================================
 function updateResourcesPanel(data) {
     const container = document.getElementById('resourcesList');
     const resources = data.resources || [];
 
-    // Update counts
     document.getElementById('ambulanceCount').textContent =
         resources.filter(r => r.resource_type === 'ambulance').length;
     document.getElementById('fireCount').textContent =
@@ -600,13 +500,11 @@ function updateResourcesPanel(data) {
 }
 
 function getResourceIcon(type) {
-    const icons = { ambulance: '🚑', fire_truck: '🚒', rescue: '🚨', supply_truck: '🚛' };
-    return icons[type] || '🚗';
+    return { ambulance: '🚑', fire_truck: '🚒', rescue: '🚨', supply_truck: '🚛' }[type] || '🚗';
 }
 
 function getResourceLabel(type) {
-    const labels = { ambulance: 'Ambulans', fire_truck: 'İtfaiye', rescue: 'Kurtarma', supply_truck: 'Lojistik' };
-    return labels[type] || type;
+    return { ambulance: 'Ambulans', fire_truck: 'İtfaiye', rescue: 'Kurtarma', supply_truck: 'Lojistik' }[type] || type;
 }
 
 // =============================================================================
@@ -628,7 +526,6 @@ function showToast(type, message) {
     `;
 
     container.appendChild(toast);
-
     setTimeout(() => {
         toast.style.animation = 'toastIn 0.3s reverse';
         setTimeout(() => toast.remove(), 300);
