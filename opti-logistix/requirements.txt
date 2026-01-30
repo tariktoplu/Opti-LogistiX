@@ -1,0 +1,51 @@
+# =============================================================================
+# Opti-Logistix - Python Dependencies
+# =============================================================================
+
+# Core
+python-dotenv==1.0.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Graph & Geospatial
+osmnx==1.9.1
+networkx==3.2.1
+geopandas==0.14.2
+shapely==2.0.2
+pyproj==3.6.1
+
+# Machine Learning - Graph Neural Networks
+torch==2.1.0
+torch-geometric==2.4.0
+torch-scatter==2.1.2
+torch-sparse==0.6.18
+
+# Reinforcement Learning
+gymnasium==0.29.1
+stable-baselines3==2.2.1
+
+# API
+fastapi==0.109.0
+uvicorn[standard]==0.25.0
+httpx==0.26.0
+
+# Data & Visualization
+numpy==1.26.3
+pandas==2.1.4
+matplotlib==3.8.2
+seaborn==0.13.1
+plotly==5.18.0
+
+# Utilities
+tqdm==4.66.1
+loguru==0.7.2
+rich==13.7.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+
+# Development
+black==23.12.1
+isort==5.13.2
+mypy==1.8.0

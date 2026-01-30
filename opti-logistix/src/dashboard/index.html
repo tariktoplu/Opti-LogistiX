@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Opti-Logistix | Afet Lojistik Karar Destek Sistemi</title>
+    <meta name="description" content="Afet durumlarında lojistik optimizasyonu için AI destekli karar destek sistemi">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">
+                    <span class="logo-icon">🚀</span>
+                    <span class="logo-text">Opti-Logistix</span>
+                </div>
+                <span class="header-subtitle">Afet Lojistik Karar Destek Sistemi</span>
+            </div>
+            <div class="header-center">
+                <div class="scenario-selector">
+                    <button class="scenario-btn" data-scenario="none" id="btnNoScenario">
+                        <span class="scenario-icon">✅</span> Normal
+                    </button>
+                    <button class="scenario-btn" data-scenario="hafif" id="btnMild">
+                        <span class="scenario-icon">⚠️</span> Hafif (5.5)
+                    </button>
+                    <button class="scenario-btn" data-scenario="orta" id="btnModerate">
+                        <span class="scenario-icon">🔶</span> Orta (6.5)
+                    </button>
+                    <button class="scenario-btn danger" data-scenario="siddetli" id="btnSevere">
+                        <span class="scenario-icon">🔴</span> Şiddetli (7.2)
+                    </button>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="status-indicator" id="connectionStatus">
+                    <span class="status-dot online"></span>
+                    <span>Bağlı</span>
+                </div>
+                <div class="time-display" id="currentTime"></div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Left Panel - Map -->
+            <section class="map-section">
+                <div class="map-controls">
+                    <div class="control-group">
+                        <label>Başlangıç Noktası</label>
+                        <div class="input-with-icon">
+                            <span class="input-icon">📍</span>
+                            <input type="text" id="startPoint" placeholder="Haritadan seçin...">
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <label>Hedef Noktası</label>
+                        <div class="input-with-icon">
+                            <span class="input-icon">🎯</span>
+                            <input type="text" id="endPoint" placeholder="Haritadan seçin...">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" id="btnCalculateRoute">
+                        <span class="btn-icon">🧭</span>
+                        Rota Hesapla
+                    </button>
+                    <button class="btn btn-secondary" id="btnClearRoute">
+                        <span class="btn-icon">🗑️</span>
+                        Temizle
+                    </button>
+                </div>
+                
+                <div class="map-container" id="map"></div>
+                
+                <div class="map-legend">
+                    <div class="legend-title">Harita Açıklaması</div>
+                    <div class="legend-items">
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #10b981;"></span>
+                            <span>Güvenli Yol</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #f59e0b;"></span>
+                            <span>Riskli Yol</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #ef4444;"></span>
+                            <span>Hasarlı Yol</span>
+                        </div>
+                        <div class="legend-item">
+                            <span class="legend-color" style="background: #3b82f6;"></span>
+                            <span>Önerilen Rota</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Panel - Dashboard -->
+            <aside class="dashboard-panel">
+                <!-- Status Cards -->
+                <div class="status-cards">
+                    <div class="status-card">
+                        <div class="status-card-icon ambulance">🚑</div>
+                        <div class="status-card-content">
+                            <div class="status-card-value" id="ambulanceCount">3</div>
+                            <div class="status-card-label">Ambulans</div>
+                        </div>
+                    </div>
+                    <div class="status-card">
+                        <div class="status-card-icon fire">🚒</div>
+                        <div class="status-card-content">
+                            <div class="status-card-value" id="fireCount">2</div>
+                            <div class="status-card-label">İtfaiye</div>
+                        </div>
+                    </div>
+                    <div class="status-card">
+                        <div class="status-card-icon road">🛣️</div>
+                        <div class="status-card-content">
+                            <div class="status-card-value" id="damagedRoads">0</div>
+                            <div class="status-card-label">Hasarlı Yol</div>
+                        </div>
+                    </div>
+                    <div class="status-card">
+                        <div class="status-card-icon bridge">🌉</div>
+                        <div class="status-card-content">
+                            <div class="status-card-value" id="damagedBridges">0</div>
+                            <div class="status-card-label">Hasarlı Köprü</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Route Info -->
+                <div class="panel-section" id="routeInfo" style="display: none;">
+                    <div class="panel-section-header">
+                        <h3>📊 Rota Bilgisi</h3>
+                    </div>
+                    <div class="route-details">
+                        <div class="route-detail">
+                            <span class="route-detail-label">Tahmini Süre</span>
+                            <span class="route-detail-value" id="routeTime">--</span>
+                        </div>
+                        <div class="route-detail">
+                            <span class="route-detail-label">Mesafe</span>
+                            <span class="route-detail-value" id="routeDistance">--</span>
+                        </div>
+                        <div class="route-detail">
+                            <span class="route-detail-label">Risk Skoru</span>
+                            <span class="route-detail-value" id="routeRisk">--</span>
+                        </div>
+                        <div class="route-detail">
+                            <span class="route-detail-label">Yöntem</span>
+                            <span class="route-detail-value" id="routeMethod">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Hospital Capacity -->
+                <div class="panel-section">
+                    <div class="panel-section-header">
+                        <h3>🏥 Hastane Kapasitesi</h3>
+                    </div>
+                    <div class="capacity-bars">
+                        <div class="capacity-bar">
+                            <div class="capacity-bar-header">
+                                <span class="capacity-name">Merkez Hastane</span>
+                                <span class="capacity-value">78%</span>
+                            </div>
+                            <div class="capacity-bar-track">
+                                <div class="capacity-bar-fill warning" style="width: 78%;"></div>
+                            </div>
+                        </div>
+                        <div class="capacity-bar">
+                            <div class="capacity-bar-header">
+                                <span class="capacity-name">Doğu Hastane</span>
+                                <span class="capacity-value">95%</span>
+                            </div>
+                            <div class="capacity-bar-track">
+                                <div class="capacity-bar-fill danger" style="width: 95%;"></div>
+                            </div>
+                        </div>
+                        <div class="capacity-bar">
+                            <div class="capacity-bar-header">
+                                <span class="capacity-name">Batı Hastane</span>
+                                <span class="capacity-value">42%</span>
+                            </div>
+                            <div class="capacity-bar-track">
+                                <div class="capacity-bar-fill success" style="width: 42%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI Recommendations -->
+                <div class="panel-section">
+                    <div class="panel-section-header">
+                        <h3>💡 AI Önerileri</h3>
+                        <span class="badge" id="recommendationCount">0</span>
+                    </div>
+                    <div class="recommendations" id="recommendations">
+                        <div class="recommendation-empty">
+                            <span class="empty-icon">🔍</span>
+                            <p>Senaryo seçildiğinde AI önerileri burada görünecek</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Resources -->
+                <div class="panel-section">
+                    <div class="panel-section-header">
+                        <h3>🚛 Kaynaklar</h3>
+                    </div>
+                    <div class="resources-list" id="resourcesList">
+                        <!-- Dynamically populated -->
+                    </div>
+                </div>
+            </aside>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-left">
+                <span>Opti-Logistix v0.1.0</span>
+                <span class="divider">|</span>
+                <span>Hackathon 2026</span>
+            </div>
+            <div class="footer-center">
+                <span id="scenarioStatus">Senaryo: Normal</span>
+            </div>
+            <div class="footer-right">
+                <span>Human-in-the-Loop: AI karar destekler, son söz operatördedir</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Notification Toast -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <p>Yükleniyor...</p>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
