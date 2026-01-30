@@ -1,12 +1,14 @@
 """
 Opti-Logistix FastAPI Backend
 Afet lojistik optimizasyonu için REST API
+OSMnx entegrasyonu ile gerçek harita verileri
 """
 
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import json
+import random
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +19,7 @@ from loguru import logger
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
-from data.graph_loader import GraphLoader
+from data.graph_loader import GraphLoader, OSMNX_AVAILABLE
 from data.scenario_generator import ScenarioGenerator, DisasterScenario
 from models.gnn.damage_predictor import DamagePredictor
 from models.rl.routing_agent import RoutingAgent, Route
@@ -28,57 +30,38 @@ from models.rl.routing_agent import RoutingAgent, Route
 # =============================================================================
 
 class Coordinates(BaseModel):
-    """Koordinat çifti"""
     lat: float = Field(..., ge=-90, le=90)
     lon: float = Field(..., ge=-180, le=180)
 
-
 class RouteRequest(BaseModel):
-    """Rota hesaplama isteği"""
     start: Coordinates
     end: Coordinates
     vehicle_type: str = Field(default="ambulance")
     urgency: float = Field(default=0.5, ge=0, le=1)
     method: str = Field(default="astar")
 
-
 class RouteResponse(BaseModel):
-    """Rota hesaplama yanıtı"""
     success: bool
     route: Optional[dict] = None
     alternatives: List[dict] = []
     message: str = ""
 
-
 class ScenarioRequest(BaseModel):
-    """Senaryo oluşturma isteği"""
     magnitude: float = Field(..., ge=4.0, le=9.0)
     epicenter: Optional[Coordinates] = None
     scenario_id: Optional[str] = None
 
-
-class DamageMapResponse(BaseModel):
-    """Hasar haritası yanıtı"""
-    scenario_id: str
-    edges: List[dict]
-    zones: List[dict]
-    stats: dict
-
-
 class ResourceStatus(BaseModel):
-    """Kaynak durumu"""
     resource_id: str
     resource_type: str
     status: str
     location: Coordinates
     assigned_zone: Optional[str] = None
 
-
 class AIRecommendation(BaseModel):
-    """AI önerisi"""
     id: str
-    type: str  # route, allocation, warning
-    priority: str  # high, medium, low
+    type: str
+    priority: str
     message: str
     details: dict
 
@@ -88,47 +71,74 @@ class AIRecommendation(BaseModel):
 # =============================================================================
 
 class AppState:
-    """Uygulama durumu (in-memory)"""
+    """Uygulama durumu"""
     
     def __init__(self):
         self.graph = None
         self.loader = GraphLoader()
         self.predictor = DamagePredictor()
         self.agent = None
-        self.current_scenario: Optional[DisasterScenario] = None
+        self.hospitals: List[int] = []
+        self.depots: List[int] = []
+        self.current_scenario_name: Optional[str] = None
+        self.damage_multiplier: float = 0.0
         self.resources: Dict[str, ResourceStatus] = {}
         self.recommendations: List[AIRecommendation] = []
+        self.map_bounds: dict = {}
         
-        # Demo grafı yükle
-        self._load_demo_graph()
+        # Haritayı yükle
+        self._load_map()
     
-    def _load_demo_graph(self):
-        """Demo graf yükle"""
-        logger.info("Demo graf yükleniyor...")
-        self.graph = self.loader._create_demo_graph()
+    def _load_map(self, place: str = "Kadikoy, Istanbul, Turkey"):
+        """Gerçek harita yükle"""
+        logger.info(f"Harita yükleniyor: {place}")
+        
+        # OSMnx ile yükle
+        self.graph = self.loader.load_from_place(place)
+        
+        # Hastane ve depo ekle
+        self.graph, self.hospitals, self.depots = self.loader.add_disaster_data(
+            self.graph, 
+            damage_multiplier=0.0,  # Başlangıçta hasar yok
+            num_hospitals=5,
+            num_depots=5
+        )
+        
+        # Harita sınırlarını kaydet
+        self.map_bounds = self.loader.get_graph_bounds(self.graph)
+        
+        # Routing agent
         self.agent = RoutingAgent(self.graph, {})
-        self._init_demo_resources()
-        logger.info(f"Graf hazır: {self.graph.number_of_nodes()} düğüm")
+        
+        # Kaynakları oluştur
+        self._init_resources()
+        
+        stats = self.loader.get_graph_stats(self.graph)
+        logger.info(f"Harita hazır: {stats['nodes']} kavşak, {stats['edges']} yol")
     
-    def _init_demo_resources(self):
-        """Demo kaynakları oluştur"""
-        nodes = list(self.graph.nodes())
+    def _init_resources(self):
+        """Kaynaklari hastane ve depolara yerleştir"""
+        self.resources = {}
         
-        resource_types = [
-            ("AMB-001", "ambulance", nodes[0]),
-            ("AMB-002", "ambulance", nodes[5]),
-            ("AMB-003", "ambulance", nodes[12]),
-            ("FIRE-001", "fire_truck", nodes[3]),
-            ("FIRE-002", "fire_truck", nodes[18]),
-            ("RESCUE-001", "rescue", nodes[10]),
-            ("SUPPLY-001", "supply_truck", nodes[22]),
-        ]
+        # Ambulanslar hastanelerde
+        for i, hospital in enumerate(self.hospitals[:3]):
+            node_data = self.graph.nodes[hospital]
+            self.resources[f"AMB-{i+1:03d}"] = ResourceStatus(
+                resource_id=f"AMB-{i+1:03d}",
+                resource_type="ambulance",
+                status="available",
+                location=Coordinates(
+                    lat=node_data.get('y', 41.0),
+                    lon=node_data.get('x', 29.0)
+                )
+            )
         
-        for res_id, res_type, node in resource_types:
-            node_data = self.graph.nodes[node]
-            self.resources[res_id] = ResourceStatus(
-                resource_id=res_id,
-                resource_type=res_type,
+        # İtfaiye depolarda
+        for i, depot in enumerate(self.depots[:2]):
+            node_data = self.graph.nodes[depot]
+            self.resources[f"FIRE-{i+1:03d}"] = ResourceStatus(
+                resource_id=f"FIRE-{i+1:03d}",
+                resource_type="fire_truck",
                 status="available",
                 location=Coordinates(
                     lat=node_data.get('y', 41.0),
@@ -136,53 +146,82 @@ class AppState:
                 )
             )
     
-    def apply_scenario(self, scenario: DisasterScenario):
-        """Senaryoyu uygula"""
-        self.current_scenario = scenario
-        self.agent = RoutingAgent(self.graph, scenario.edge_damages)
+    def apply_scenario(self, scenario_name: str, magnitude: float):
+        """Afet senaryosu uygula"""
+        self.current_scenario_name = scenario_name
+        
+        # Hasar çarpanı
+        damage_map = {"hafif": 0.3, "orta": 0.6, "siddetli": 1.0}
+        self.damage_multiplier = damage_map.get(scenario_name, 0.5)
+        
+        # Yollara hasar ekle
+        for u, v, k, data in self.graph.edges(keys=True, data=True):
+            base_damage = random.random() * self.damage_multiplier
+            data['damage_prob'] = min(1.0, base_damage)
+            
+            base_length = data.get('length', 100)
+            data['weight'] = base_length * (1 + data['damage_prob'] * 15)
+            
+            if data['damage_prob'] > 0.8:
+                data['damage_level'] = 'critical'
+            elif data['damage_prob'] > 0.5:
+                data['damage_level'] = 'moderate'
+            else:
+                data['damage_level'] = 'safe'
+        
+        # Agent güncelle
+        damage_scores = {
+            f"{u}_{v}_{k}": data.get('damage_prob', 0)
+            for u, v, k, data in self.graph.edges(keys=True, data=True)
+        }
+        self.agent = RoutingAgent(self.graph, damage_scores)
+        
+        # AI önerileri
         self._generate_recommendations()
+        
+        logger.info(f"Senaryo uygulandı: {scenario_name} (M{magnitude})")
+    
+    def clear_scenario(self):
+        """Senaryoyu temizle"""
+        self.current_scenario_name = None
+        self.damage_multiplier = 0.0
+        
+        for u, v, k, data in self.graph.edges(keys=True, data=True):
+            data['damage_prob'] = 0.0
+            data['damage_level'] = 'safe'
+            data['weight'] = data.get('length', 100)
+        
+        self.agent = RoutingAgent(self.graph, {})
+        self.recommendations = []
     
     def _generate_recommendations(self):
         """AI önerileri oluştur"""
         self.recommendations = []
         
-        if not self.current_scenario:
-            return
+        # Kritik hasar uyarısı
+        critical_count = sum(
+            1 for _, _, data in self.graph.edges(data=True)
+            if data.get('damage_level') == 'critical'
+        )
         
-        # Yüksek riskli bölge uyarısı
-        for zone in self.current_scenario.damage_zones:
-            if zone.damage_score > 0.7:
-                self.recommendations.append(AIRecommendation(
-                    id=f"WARN-{zone.zone_id}",
-                    type="warning",
-                    priority="high",
-                    message=f"{zone.zone_id} bölgesi kritik hasar altında",
-                    details={
-                        "zone": zone.zone_id,
-                        "damage_level": zone.damage_level,
-                        "coordinates": {
-                            "lat": zone.center_lat,
-                            "lon": zone.center_lon
-                        }
-                    }
-                ))
-        
-        # Kaynak tahsis önerisi
-        available_ambulances = [
-            r for r in self.resources.values()
-            if r.resource_type == "ambulance" and r.status == "available"
-        ]
-        
-        if available_ambulances:
+        if critical_count > 0:
             self.recommendations.append(AIRecommendation(
-                id="ALLOC-001",
+                id="WARN-CRITICAL",
+                type="warning",
+                priority="high",
+                message=f"{critical_count} yol segmenti kritik hasar altında!",
+                details={"critical_roads": critical_count}
+            ))
+        
+        # Ambulans önerisi
+        available = [r for r in self.resources.values() if r.status == "available"]
+        if available and self.hospitals:
+            self.recommendations.append(AIRecommendation(
+                id="ALLOC-AMB",
                 type="allocation",
                 priority="medium",
-                message=f"{len(available_ambulances)} ambulans müsait. Kritik bölgelere sevk önerilir.",
-                details={
-                    "resources": [r.resource_id for r in available_ambulances],
-                    "suggested_zones": ["Z0_CRITICAL", "Z1_SEVERE"]
-                }
+                message=f"{len(available)} araç müsait. Kritik bölgelere sevk önerilir.",
+                details={"available_resources": len(available)}
             ))
 
 
@@ -196,13 +235,10 @@ state = AppState()
 
 app = FastAPI(
     title="Opti-Logistix API",
-    description="Afet Lojistik Optimizasyon Sistemi API",
-    version="0.1.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
+    description="Afet Lojistik Optimizasyon Sistemi - OSMnx Entegrasyonu",
+    version="0.2.0"
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -218,408 +254,209 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    """API kök endpoint"""
     return {
         "name": "Opti-Logistix API",
-        "version": "0.1.0",
-        "status": "running",
+        "version": "0.2.0",
+        "osmnx_available": OSMNX_AVAILABLE,
         "graph_nodes": state.graph.number_of_nodes() if state.graph else 0,
-        "active_scenario": state.current_scenario.scenario_id if state.current_scenario else None
+        "graph_edges": state.graph.number_of_edges() if state.graph else 0,
+        "scenario": state.current_scenario_name,
+        "map_center": state.map_bounds
     }
 
 
 @app.get("/api/v1/health")
 async def health_check():
-    """Sağlık kontrolü"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "components": {
-            "graph": state.graph is not None,
-            "predictor": state.predictor is not None,
-            "agent": state.agent is not None
-        }
+        "osmnx": OSMNX_AVAILABLE
     }
 
 
-# ----- ROTA YÖNETİMİ -----
+# ----- HARİTA YÖNETİMİ -----
 
-@app.post("/api/v1/route", response_model=RouteResponse)
-async def calculate_route(request: RouteRequest):
-    """
-    Optimal rota hesapla.
-    
-    Desteklenen yöntemler:
-    - astar: A* algoritması (hızlı)
-    - dijkstra: Dijkstra algoritması (garanti optimal)
-    - rl: Pekiştirmeli öğrenme (eğitilmişse)
-    - hybrid: A* + RL kombinasyonu
-    """
+@app.post("/api/v1/map/load")
+async def load_map(place: str = "Kadikoy, Istanbul, Turkey"):
+    """Yeni bölge haritası yükle"""
     try:
-        # En yakın düğümleri bul
-        start_node = _find_nearest_node(request.start)
-        end_node = _find_nearest_node(request.end)
-        
-        if start_node == end_node:
-            return RouteResponse(
-                success=False,
-                message="Başlangıç ve hedef aynı nokta"
-            )
-        
-        # Rota hesapla
-        route = state.agent.find_route(
-            start_node, end_node,
-            method=request.method,
-            urgency=request.urgency
-        )
-        
-        if not route:
-            return RouteResponse(
-                success=False,
-                message="Rota bulunamadı"
-            )
-        
-        # Alternatifler
-        alternatives = []
-        all_routes = state.agent.find_all_routes(start_node, end_node, request.urgency)
-        for alt in all_routes:
-            if alt.method != route.method:
-                alternatives.append(_route_to_dict(alt))
-        
-        return RouteResponse(
-            success=True,
-            route=_route_to_dict(route),
-            alternatives=alternatives,
-            message="Rota hesaplandı"
-        )
-        
+        state._load_map(place)
+        return {
+            "success": True,
+            "place": place,
+            "nodes": state.graph.number_of_nodes(),
+            "edges": state.graph.number_of_edges(),
+            "bounds": state.map_bounds
+        }
     except Exception as e:
-        logger.error(f"Rota hesaplama hatası: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/routes/compare")
-async def compare_routes(
-    start_lat: float = Query(...),
-    start_lon: float = Query(...),
-    end_lat: float = Query(...),
-    end_lon: float = Query(...)
-):
-    """Tüm yöntemlerle rotaları karşılaştır"""
-    start = Coordinates(lat=start_lat, lon=start_lon)
-    end = Coordinates(lat=end_lat, lon=end_lon)
-    
-    start_node = _find_nearest_node(start)
-    end_node = _find_nearest_node(end)
-    
-    routes = state.agent.find_all_routes(start_node, end_node)
-    
+@app.get("/api/v1/map/bounds")
+async def get_map_bounds():
+    """Harita sınırlarını döndür"""
+    return state.map_bounds
+
+
+@app.get("/api/v1/map/edges")
+async def get_map_edges():
+    """Tüm yol segmentlerini GeoJSON formatında döndür"""
+    edges = state.loader.get_edges_as_geojson(state.graph)
     return {
-        "routes": [_route_to_dict(r) for r in routes],
-        "optimal": next(
-            (_route_to_dict(r) for r in routes if r.is_optimal),
-            None
-        )
+        "type": "FeatureCollection",
+        "features": edges,
+        "count": len(edges)
+    }
+
+
+@app.get("/api/v1/map/nodes")
+async def get_map_nodes():
+    """Tüm düğümleri döndür (hastane, depo, kavşak)"""
+    nodes = state.loader.get_nodes_as_geojson(state.graph)
+    return {
+        "nodes": nodes,
+        "hospitals": [n for n in nodes if n['type'] == 'hospital'],
+        "depots": [n for n in nodes if n['type'] == 'depot'],
+        "count": len(nodes)
     }
 
 
 # ----- SENARYO YÖNETİMİ -----
 
-@app.get("/api/v1/scenarios")
-async def list_scenarios():
-    """Mevcut senaryoları listele"""
-    generator = ScenarioGenerator()
-    scenarios = generator.generate_preset_scenarios(state.graph)
-    
-    return {
-        "scenarios": [
-            {
-                "id": s.scenario_id,
-                "type": s.disaster_type,
-                "magnitude": s.magnitude,
-                "affected_roads": s.affected_roads,
-                "affected_bridges": s.affected_bridges
-            }
-            for s in scenarios
-        ]
-    }
-
-
-@app.post("/api/v1/scenarios/activate")
-async def activate_scenario(request: ScenarioRequest):
-    """Yeni senaryo oluştur ve aktive et"""
-    generator = ScenarioGenerator()
-    
-    epicenter = None
-    if request.epicenter:
-        epicenter = (request.epicenter.lat, request.epicenter.lon)
-    
-    scenario = generator.generate_earthquake_scenario(
-        state.graph,
-        magnitude=request.magnitude,
-        epicenter=epicenter,
-        scenario_id=request.scenario_id
-    )
-    
-    state.apply_scenario(scenario)
-    
-    return {
-        "success": True,
-        "scenario": {
-            "id": scenario.scenario_id,
-            "magnitude": scenario.magnitude,
-            "affected_roads": scenario.affected_roads,
-            "affected_bridges": scenario.affected_bridges,
-            "damage_zones": len(scenario.damage_zones)
-        }
-    }
-
-
 @app.post("/api/v1/scenarios/preset/{scenario_name}")
 async def activate_preset_scenario(scenario_name: str):
-    """Önceden tanımlı senaryo aktive et (hafif, orta, siddetli)"""
-    magnitude_map = {
-        "hafif": 5.5,
-        "orta": 6.5,
-        "siddetli": 7.2
-    }
+    """Senaryo aktive et (hafif, orta, siddetli)"""
+    magnitude_map = {"hafif": 5.5, "orta": 6.5, "siddetli": 7.2}
     
     if scenario_name not in magnitude_map:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Geçersiz senaryo: {scenario_name}. Geçerli: hafif, orta, siddetli"
-        )
+        raise HTTPException(400, f"Geçersiz senaryo. Geçerli: hafif, orta, siddetli")
     
-    generator = ScenarioGenerator()
-    scenario = generator.generate_earthquake_scenario(
-        state.graph,
-        magnitude=magnitude_map[scenario_name],
-        scenario_id=f"PRESET_{scenario_name.upper()}"
-    )
+    state.apply_scenario(scenario_name, magnitude_map[scenario_name])
     
-    state.apply_scenario(scenario)
+    stats = state.loader.get_graph_stats(state.graph)
     
     return {
         "success": True,
-        "scenario_name": scenario_name,
-        "scenario_id": scenario.scenario_id,
-        "magnitude": scenario.magnitude
+        "scenario": scenario_name,
+        "magnitude": magnitude_map[scenario_name],
+        "damage_stats": stats.get('damage_levels', {})
     }
 
 
 @app.delete("/api/v1/scenarios/current")
 async def clear_scenario():
-    """Aktif senaryoyu temizle"""
-    state.current_scenario = None
-    state.agent = RoutingAgent(state.graph, {})
-    state.recommendations = []
-    
+    """Senaryoyu temizle"""
+    state.clear_scenario()
     return {"success": True, "message": "Senaryo temizlendi"}
 
 
-# ----- HASAR HARİTASI -----
-
-@app.get("/api/v1/damage-map", response_model=DamageMapResponse)
-async def get_damage_map():
-    """Mevcut hasar haritasını döndür"""
-    if not state.current_scenario:
-        raise HTTPException(
-            status_code=404,
-            detail="Aktif senaryo yok. Önce senaryo aktive edin."
-        )
+@app.get("/api/v1/scenarios/current")
+async def get_current_scenario():
+    """Mevcut senaryo bilgisi"""
+    if not state.current_scenario_name:
+        return {"active": False}
     
-    scenario = state.current_scenario
-    
-    # Kenar hasarları
-    edges = []
-    for edge_id, damage in scenario.edge_damages.items():
-        parts = edge_id.split("_")
-        u, v = int(parts[0]), int(parts[1])
-        
-        u_data = state.graph.nodes[u]
-        v_data = state.graph.nodes[v]
-        
-        edges.append({
-            "id": edge_id,
-            "from": {"lat": u_data.get('y'), "lon": u_data.get('x')},
-            "to": {"lat": v_data.get('y'), "lon": v_data.get('x')},
-            "damage": damage,
-            "level": _get_damage_level(damage)
-        })
-    
-    # Hasar bölgeleri
-    zones = [
-        {
-            "id": z.zone_id,
-            "center": {"lat": z.center_lat, "lon": z.center_lon},
-            "radius_m": z.radius_m,
-            "level": z.damage_level,
-            "score": z.damage_score
-        }
-        for z in scenario.damage_zones
-    ]
-    
-    # İstatistikler
-    damage_values = list(scenario.edge_damages.values())
-    stats = {
-        "total_edges": len(edges),
-        "damaged_edges": sum(1 for d in damage_values if d > 0.3),
-        "critical_edges": sum(1 for d in damage_values if d > 0.7),
-        "avg_damage": sum(damage_values) / len(damage_values) if damage_values else 0,
-        "max_damage": max(damage_values) if damage_values else 0
+    stats = state.loader.get_graph_stats(state.graph)
+    return {
+        "active": True,
+        "name": state.current_scenario_name,
+        "damage_multiplier": state.damage_multiplier,
+        "stats": stats
     }
+
+
+# ----- ROTA YÖNETİMİ -----
+
+@app.post("/api/v1/route")
+async def calculate_route(request: RouteRequest):
+    """Optimal rota hesapla"""
+    try:
+        start_node = state.loader.find_nearest_node(
+            state.graph, request.start.lat, request.start.lon
+        )
+        end_node = state.loader.find_nearest_node(
+            state.graph, request.end.lat, request.end.lon
+        )
+        
+        if start_node == end_node:
+            return {"success": False, "message": "Başlangıç ve hedef aynı nokta"}
+        
+        # GraphLoader ile rota bul
+        route = state.loader.find_route(state.graph, start_node, end_node, weight='weight')
+        
+        if not route:
+            return {"success": False, "message": "Rota bulunamadı"}
+        
+        # Tahmini süre hesapla (50 km/h ortalama hız)
+        estimated_time = route['distance_km'] / 50 * 60  # dakika
+        
+        return {
+            "success": True,
+            "route": {
+                "path_coords": route['path_coords'],
+                "distance_km": round(route['distance_km'], 2),
+                "risk_score": round(route['risk_score'], 3),
+                "estimated_time": round(estimated_time, 1),
+                "segments": route['num_segments']
+            },
+            "message": "Rota hesaplandı"
+        }
+        
+    except Exception as e:
+        logger.error(f"Rota hatası: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/v1/route/hospital")
+async def route_to_nearest_hospital(lat: float, lon: float):
+    """En yakın hastaneye rota"""
+    start_node = state.loader.find_nearest_node(state.graph, lat, lon)
     
-    return DamageMapResponse(
-        scenario_id=scenario.scenario_id,
-        edges=edges,
-        zones=zones,
-        stats=stats
-    )
+    best_route = None
+    best_distance = float('inf')
+    
+    for hospital in state.hospitals:
+        route = state.loader.find_route(state.graph, start_node, hospital, weight='weight')
+        if route and route['distance_km'] < best_distance:
+            best_distance = route['distance_km']
+            best_route = route
+    
+    if not best_route:
+        return {"success": False, "message": "Hastaneye rota bulunamadı"}
+    
+    return {
+        "success": True,
+        "route": best_route,
+        "hospital": state.graph.nodes[hospital].get('name', 'Hastane')
+    }
 
 
 # ----- KAYNAK YÖNETİMİ -----
 
 @app.get("/api/v1/resources")
 async def list_resources():
-    """Tüm kaynakları listele"""
     return {
         "resources": [r.dict() for r in state.resources.values()],
-        "summary": {
-            "total": len(state.resources),
-            "ambulances": sum(1 for r in state.resources.values() if r.resource_type == "ambulance"),
-            "fire_trucks": sum(1 for r in state.resources.values() if r.resource_type == "fire_truck"),
-            "rescue": sum(1 for r in state.resources.values() if r.resource_type == "rescue"),
-            "supply": sum(1 for r in state.resources.values() if r.resource_type == "supply_truck")
-        }
+        "hospitals": len(state.hospitals),
+        "depots": len(state.depots)
     }
-
-
-@app.get("/api/v1/resources/{resource_type}")
-async def get_resources_by_type(resource_type: str):
-    """Türe göre kaynakları getir"""
-    resources = [
-        r.dict() for r in state.resources.values()
-        if r.resource_type == resource_type
-    ]
-    return {"resource_type": resource_type, "resources": resources}
-
-
-@app.post("/api/v1/resources/{resource_id}/assign")
-async def assign_resource(resource_id: str, zone_id: str):
-    """Kaynağı bölgeye ata"""
-    if resource_id not in state.resources:
-        raise HTTPException(status_code=404, detail="Kaynak bulunamadı")
-    
-    resource = state.resources[resource_id]
-    resource.assigned_zone = zone_id
-    resource.status = "assigned"
-    
-    return {"success": True, "resource": resource.dict()}
 
 
 # ----- AI ÖNERİLERİ -----
 
 @app.get("/api/v1/recommendations")
 async def get_recommendations():
-    """AI önerilerini getir"""
     return {
         "recommendations": [r.dict() for r in state.recommendations],
         "count": len(state.recommendations)
     }
 
 
-# ----- GRAFİK VERİSİ -----
+# ----- GRAFİK İSTATİSTİKLERİ -----
 
-@app.get("/api/v1/graph/nodes")
-async def get_graph_nodes():
-    """Graf düğümlerini getir"""
-    nodes = []
-    for node_id in state.graph.nodes():
-        data = state.graph.nodes[node_id]
-        nodes.append({
-            "id": node_id,
-            "lat": data.get('y', 0),
-            "lon": data.get('x', 0),
-            "street_count": data.get('street_count', 0)
-        })
-    return {"nodes": nodes}
-
-
-@app.get("/api/v1/graph/edges")
-async def get_graph_edges():
-    """Graf kenarlarını getir"""
-    edges = []
-    for u, v, key, data in state.graph.edges(keys=True, data=True):
-        u_data = state.graph.nodes[u]
-        v_data = state.graph.nodes[v]
-        
-        edge_id = f"{u}_{v}_{key}"
-        damage = 0.0
-        if state.current_scenario:
-            damage = state.current_scenario.edge_damages.get(edge_id, 0)
-        
-        edges.append({
-            "id": edge_id,
-            "from": {"lat": u_data.get('y'), "lon": u_data.get('x')},
-            "to": {"lat": v_data.get('y'), "lon": v_data.get('x')},
-            "length_m": data.get('length_m', data.get('length', 100)),
-            "road_score": data.get('road_score', 0.5),
-            "is_bridge": data.get('is_bridge', False),
-            "damage": damage
-        })
-    return {"edges": edges}
-
-
-@app.get("/api/v1/graph/stats")
-async def get_graph_stats():
-    """Graf istatistiklerini getir"""
+@app.get("/api/v1/stats")
+async def get_stats():
     return state.loader.get_graph_stats(state.graph)
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def _find_nearest_node(coords: Coordinates) -> int:
-    """Koordinatlara en yakın düğümü bul"""
-    min_dist = float('inf')
-    nearest = None
-    
-    for node_id in state.graph.nodes():
-        data = state.graph.nodes[node_id]
-        lat, lon = data.get('y', 0), data.get('x', 0)
-        
-        dist = ((lat - coords.lat) ** 2 + (lon - coords.lon) ** 2) ** 0.5
-        if dist < min_dist:
-            min_dist = dist
-            nearest = node_id
-    
-    return nearest
-
-
-def _route_to_dict(route: Route) -> dict:
-    """Route'u dict'e çevir"""
-    return {
-        "path": route.path,
-        "path_coords": [{"lat": c[0], "lon": c[1]} for c in route.path_coords],
-        "estimated_time": round(route.estimated_time, 1),
-        "risk_score": round(route.risk_score, 3),
-        "distance_km": round(route.distance_km, 2),
-        "method": route.method,
-        "is_optimal": route.is_optimal
-    }
-
-
-def _get_damage_level(score: float) -> str:
-    """Hasar skorundan seviye"""
-    if score < 0.2:
-        return "none"
-    elif score < 0.4:
-        return "mild"
-    elif score < 0.7:
-        return "moderate"
-    else:
-        return "severe"
 
 
 # =============================================================================
