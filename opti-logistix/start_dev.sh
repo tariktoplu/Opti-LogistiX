@@ -14,7 +14,7 @@ source venv/bin/activate
 
 # Install dependencies
 echo "📥 Bağımlılıklar kontrol ediliyor..."
-pip install -q fastapi uvicorn pydantic-settings loguru networkx numpy
+pip install -q -r requirements.txt
 
 # Start API server
 echo "🌐 API sunucusu başlatılıyor (port 8000)..."

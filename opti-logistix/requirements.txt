@@ -49,3 +49,4 @@ pytest-asyncio==0.23.3
 black==23.12.1
 isort==5.13.2
 mypy==1.8.0
+scikit-learn
