@@ -1,22 +1,24 @@
 <!DOCTYPE html>
 <html lang="tr">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Opti-Logistix | Afet Lojistik Karar Destek Sistemi</title>
     <meta name="description" content="Afet durumlarında lojistik optimizasyonu için AI destekli karar destek sistemi">
-    
+
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    
+
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    
+
     <!-- Styles -->
     <link rel="stylesheet" href="css/style.css">
 </head>
+
 <body>
     <div id="app">
         <!-- Header -->
@@ -80,10 +82,15 @@
                         <span class="btn-icon">🗑️</span>
                         Temizle
                     </button>
+                    <button class="btn btn-secondary" id="btnAddNodeMode"
+                        title="Haritaya tıklayarak seyyar hastane ekleyin">
+                        <span class="btn-icon">➕🏥</span>
+                        Hastane Ekle
+                    </button>
                 </div>
-                
+
                 <div class="map-container" id="map"></div>
-                
+
                 <div class="map-legend">
                     <div class="legend-title">Harita Açıklaması</div>
                     <div class="legend-items">
@@ -163,6 +170,16 @@
                             <span class="route-detail-label">Yöntem</span>
                             <span class="route-detail-value" id="routeMethod">--</span>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Nearby Hospitals -->
+                <div class="panel-section" id="nearbyHospitalsPanel" style="display: none;">
+                    <div class="panel-section-header">
+                        <h3>🏥 En Yakın Hastaneler</h3>
+                    </div>
+                    <div class="resources-list" id="nearbyHospitalsList">
+                        <!-- Dynamically populated -->
                     </div>
                 </div>
 
@@ -257,4 +274,5 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="js/app.js"></script>
 </body>
+
 </html>

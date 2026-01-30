@@ -23,6 +23,7 @@ const state = {
     },
     currentScenario: null,
     selecting: null,
+    mode: 'normal', // normal, adding_hospital
     mapBounds: null
 };
 
@@ -74,6 +75,14 @@ function initMap() {
     state.layers.zones = L.layerGroup().addTo(state.map);
 
     state.map.on('click', handleMapClick);
+
+    // Sağ tık ile Seyyar Hastane ekle
+    state.map.on('contextmenu', async (e) => {
+        const confirm = window.confirm("Buraya Seyyar Hastane kurmak istiyor musunuz?");
+        if (confirm) {
+            await addMobileHospital(e.latlng.lat, e.latlng.lng);
+        }
+    });
 }
 
 function initEventListeners() {
@@ -83,6 +92,21 @@ function initEventListeners() {
 
     document.getElementById('btnCalculateRoute').addEventListener('click', calculateRoute);
     document.getElementById('btnClearRoute').addEventListener('click', clearRoute);
+
+    const btnAddNode = document.getElementById('btnAddNodeMode');
+    btnAddNode.addEventListener('click', () => {
+        state.mode = state.mode === 'normal' ? 'adding_hospital' : 'normal';
+        btnAddNode.classList.toggle('active', state.mode === 'adding_hospital');
+        btnAddNode.style.background = state.mode === 'adding_hospital' ? '#ef4444' : '';
+        btnAddNode.style.color = state.mode === 'adding_hospital' ? 'white' : '';
+
+        if (state.mode === 'adding_hospital') {
+            showToast('info', 'Haritada hastane kurmak istediğiniz yere tıklayın');
+            document.body.style.cursor = 'crosshair';
+        } else {
+            document.body.style.cursor = 'default';
+        }
+    });
 
     document.getElementById('startPoint').addEventListener('focus', () => { state.selecting = 'start'; });
     document.getElementById('endPoint').addEventListener('focus', () => { state.selecting = 'end'; });
@@ -161,15 +185,24 @@ function drawSpecialNodes(nodesData) {
 
     // Hastaneler
     nodesData.hospitals.forEach(node => {
+        const iconUrl = node.subtype === 'mobile' ? '🏕️' : '🏥';
         const marker = L.marker([node.lat, node.lon], {
             icon: L.divIcon({
                 className: 'custom-marker hospital-marker',
-                html: '🏥',
+                html: iconUrl,
                 iconSize: [30, 30],
                 iconAnchor: [15, 15]
             })
         });
-        marker.bindPopup(`<strong>${node.name || 'Hastane'}</strong>`);
+
+        let buildingType = node.category || 'Bilinmeyen Hastane';
+        let capacityInfo = node.capacity ? `<br>Kapasite: ${node.capacity}` : '';
+
+        marker.bindPopup(`
+            <strong>${node.name || 'Hastane'}</strong><br>
+            <small>${buildingType}</small>
+            ${capacityInfo}
+        `);
         state.layers.hospitals.addLayer(marker);
     });
 
@@ -213,12 +246,30 @@ function getLineWeight(highway) {
 function handleMapClick(e) {
     const { lat, lng } = e.latlng;
 
+    if (state.mode === 'adding_hospital') {
+        addMobileHospital(lat, lng);
+        // Modu kapat
+        state.mode = 'normal';
+        const btn = document.getElementById('btnAddNodeMode');
+        btn.classList.remove('active');
+        btn.style.background = '';
+        btn.style.color = '';
+        document.body.style.cursor = 'default';
+        return;
+    }
+
     if (state.selecting === 'start') {
         setMarker('start', lat, lng);
         document.getElementById('startPoint').value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
     } else if (state.selecting === 'end') {
         setMarker('end', lat, lng);
         document.getElementById('endPoint').value = `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }
+
+    // Her durumda, eğer başlangıç noktası değiştiyse yakın hastaneleri güncelle
+    if (state.markers.start && (!state.selecting || state.selecting === 'start')) {
+        const startPos = state.markers.start.getLatLng();
+        fetchNearbyHospitals(startPos.lat, startPos.lng);
     }
 }
 
@@ -541,3 +592,87 @@ function startClock() {
     update();
     setInterval(update, 1000);
 }
+
+// =============================================================================
+// Hospital Management Features
+// =============================================================================
+
+async function fetchNearbyHospitals(lat, lon) {
+    document.getElementById('nearbyHospitalsPanel').style.display = 'block';
+    const container = document.getElementById('nearbyHospitalsList');
+    container.innerHTML = '<div style="padding:10px; text-align:center;">Aranıyor...</div>';
+
+    try {
+        const res = await fetch(`${API_BASE_URL}/hospitals/nearby?lat=${lat}&lon=${lon}&limit=5`);
+        const hospitals = await res.json();
+        updateNearbyHospitalsPanel(hospitals);
+    } catch (e) {
+        console.error(e);
+        container.innerHTML = '<div style="padding:10px; color:red;">Hata oluştu</div>';
+    }
+}
+
+function updateNearbyHospitalsPanel(hospitals) {
+    const container = document.getElementById('nearbyHospitalsList');
+
+    if (hospitals.length === 0) {
+        container.innerHTML = '<div style="padding:10px;">Yakınlarda hastane bulunamadı.</div>';
+        return;
+    }
+
+    container.innerHTML = hospitals.map(h => `
+        <div class="resource-item" onclick="selectHospitalAsTarget('${h.name}', ${h.lat}, ${h.lon})">
+            <span class="resource-icon">${h.category.includes('Sağlık') ? '⚕️' : '🏥'}</span>
+            <div class="resource-info">
+                <div class="resource-id">${h.name}</div>
+                <div class="resource-type" style="font-size: 11px;">${h.category}</div>
+                <div class="resource-type">${h.distance_km} km mesafe</div>
+            </div>
+            <span class="resource-status available">Rota Çiz</span>
+        </div>
+    `).join('');
+}
+
+function selectHospitalAsTarget(name, lat, lon) {
+    setMarker('end', lat, lon);
+    document.getElementById('endPoint').value = `${lat.toFixed(5)}, ${lon.toFixed(5)}`; // Koordinat yerine isim de yazılabilir ama API koordinat istiyor
+
+    // Otomatik Rota Hesapla
+    calculateRoute();
+
+    showToast('info', `${name} hedef olarak seçildi`);
+}
+
+async function addMobileHospital(lat, lon) {
+    showLoading(true);
+    try {
+        const response = await fetch(`${API_BASE_URL}/map/nodes/add`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                lat: lat,
+                lon: lon,
+                type: 'hospital',
+                name: 'Seyyar Sahra Hastanesi',
+                category: 'Seyyar Acil Müdahale',
+                capacity: 50
+            })
+        });
+
+        const result = await response.json();
+        if (result.success) {
+            showToast('success', 'Seyyar Hastane kuruldu!');
+            // Haritayı yenile
+            const nodesRes = await fetch(`${API_BASE_URL}/map/nodes`);
+            const nodesData = await nodesRes.json();
+            drawSpecialNodes(nodesData);
+        }
+    } catch (e) {
+        showToast('error', 'Seyyar hastane eklenemedi');
+    }
+    showLoading(false);
+}
+
+// Global functions
+window.selectHospitalAsTarget = selectHospitalAsTarget;
+window.fetchNearbyHospitals = fetchNearbyHospitals;

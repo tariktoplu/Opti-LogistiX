@@ -97,20 +97,59 @@ class GraphLoader:
         nodes_list = list(G.nodes())
         
         # Hastane ve Depo noktaları belirle
-        hospitals = random.sample(nodes_list, min(num_hospitals, len(nodes_list) // 10))
-        remaining_nodes = [n for n in nodes_list if n not in hospitals]
-        depots = random.sample(remaining_nodes, min(num_depots, len(remaining_nodes) // 10))
+        # Hastane ve Depo noktaları belirle
+        # Toplam düğüm sayısına göre oranla
+        n_nodes = len(nodes_list)
+        
+        # 3. Basamak (Şehir/Eğitim) - Az sayıda
+        n_tier3 = max(1, num_hospitals // 5)
+        # 2. Basamak (Devlet) - Orta sayıda
+        n_tier2 = max(2, num_hospitals // 2)
+        # 1. Basamak (Sağlık Ocağı) - Çok sayıda
+        n_tier1 = max(5, num_hospitals * 2)
+        
+        # Depolar
+        n_depots = num_depots
+
+        # Rastgele seçimler
+        selected_nodes = random.sample(nodes_list, n_tier3 + n_tier2 + n_tier1 + n_depots)
+        
+        tier3_nodes = selected_nodes[:n_tier3]
+        tier2_nodes = selected_nodes[n_tier3:n_tier3+n_tier2]
+        tier1_nodes = selected_nodes[n_tier3+n_tier2:n_tier3+n_tier2+n_tier1]
+        depot_nodes = selected_nodes[-n_depots:]
+        
+        hospitals = tier3_nodes + tier2_nodes + tier1_nodes
         
         # Düğümlere rol ata
         for node in G.nodes():
-            if node in hospitals:
+            if node in tier3_nodes:
                 G.nodes[node]['type'] = 'hospital'
-                G.nodes[node]['name'] = f'Hastane-{hospitals.index(node)+1}'
-            elif node in depots:
+                G.nodes[node]['subtype'] = 'tier3'
+                G.nodes[node]['category'] = '3. Basamak (Şehir/Eğitim Hast.)'
+                G.nodes[node]['capacity'] = 1000
+                G.nodes[node]['name'] = f'Şehir Hastanesi-{tier3_nodes.index(node)+1}'
+            elif node in tier2_nodes:
+                G.nodes[node]['type'] = 'hospital'
+                G.nodes[node]['subtype'] = 'tier2'
+                G.nodes[node]['category'] = '2. Basamak (Devlet Hast.)'
+                G.nodes[node]['capacity'] = 400
+                G.nodes[node]['name'] = f'Devlet Hastanesi-{tier2_nodes.index(node)+1}'
+            elif node in tier1_nodes:
+                G.nodes[node]['type'] = 'hospital'
+                G.nodes[node]['subtype'] = 'tier1'
+                G.nodes[node]['category'] = '1. Basamak (Sağlık Ocağı)'
+                G.nodes[node]['capacity'] = 50
+                G.nodes[node]['name'] = f'Sağlık Ocağı-{tier1_nodes.index(node)+1}'
+            elif node in depot_nodes:
                 G.nodes[node]['type'] = 'depot'
-                G.nodes[node]['name'] = f'Depo-{depots.index(node)+1}'
+                G.nodes[node]['name'] = f'Lojistik Depo-{depot_nodes.index(node)+1}'
             else:
                 G.nodes[node]['type'] = 'junction'
+                
+        # Başka fonksiyonlarda kullanım için hastane listesini güncelle
+        hospitals = tier3_nodes + tier2_nodes + tier1_nodes
+        depots = depot_nodes
         
         # Yollara hasar ve ağırlık ekle
         for u, v, k, data in G.edges(keys=True, data=True):
@@ -186,6 +225,9 @@ class GraphLoader:
                 'lon': data.get('x', 0),
                 'type': data.get('type', 'junction'),
                 'name': data.get('name', ''),
+                'category': data.get('category', ''),
+                'subtype': data.get('subtype', ''),
+                'capacity': data.get('capacity', 0),
                 'street_count': data.get('street_count', 0)
             })
         

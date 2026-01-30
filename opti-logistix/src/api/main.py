@@ -65,6 +65,14 @@ class AIRecommendation(BaseModel):
     message: str
     details: dict
 
+class NodeUpdate(BaseModel):
+    lat: float
+    lon: float
+    type: str = "hospital"
+    name: str = "Seyyar Hastane"
+    category: str = "Seyyar Acil Müdahale"
+    capacity: int = 50
+
 
 # =============================================================================
 # Application State
@@ -444,6 +452,65 @@ async def list_resources():
         "hospitals": len(state.hospitals),
         "depots": len(state.depots)
     }
+
+
+# ----- HASTANE YÖNETİMİ -----
+
+@app.get("/api/v1/hospitals/nearby")
+async def get_nearby_hospitals(lat: float, lon: float, limit: int = 5):
+    """Konuma en yakın hastaneleri listele"""
+    hospitals_data = []
+    
+    for h_node in state.hospitals:
+        data = state.graph.nodes[h_node]
+        h_lat = data.get('y')
+        h_lon = data.get('x')
+        
+        # Basit öklid mesafesi (yaklaşık, lat/lon farkı * 111 km)
+        dist = ((lat - h_lat)**2 + (lon - h_lon)**2)**0.5 * 111
+        
+        hospitals_data.append({
+            "id": h_node,
+            "name": data.get('name', 'Bilinmeyen Hastane'),
+            "category": data.get('category', 'Genel'),
+            "capacity": data.get('capacity', 0),
+            "distance_km": round(dist, 2),
+            "lat": h_lat,
+            "lon": h_lon
+        })
+    
+    # Mesafeye göre sırala
+    hospitals_data.sort(key=lambda x: x['distance_km'])
+    
+    return hospitals_data[:limit]
+
+
+@app.post("/api/v1/map/nodes/add")
+async def add_custom_node(node: NodeUpdate):
+    """Haritaya yeni düğüm ekle (Mevcut en yakın düğümü günceller)"""
+    try:
+        nearest_node = state.loader.find_nearest_node(state.graph, node.lat, node.lon)
+        
+        # Node özelliklerini güncelle
+        state.graph.nodes[nearest_node].update({
+            'type': node.type,
+            'name': node.name,
+            'category': node.category,
+            'capacity': node.capacity,
+            'subtype': 'mobile'
+        })
+        
+        if node.type == 'hospital':
+            if nearest_node not in state.hospitals:
+                state.hospitals.append(nearest_node)
+                
+        return {
+            "success": True, 
+            "node_id": nearest_node, 
+            "message": f"Konum işaretlendi: {node.name}"
+        }
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 # ----- AI ÖNERİLERİ -----
