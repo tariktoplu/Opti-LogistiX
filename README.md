@@ -542,32 +542,17 @@ Bu proje **MIT License** altında lisanslanmıştır. Detaylar için [`LICENSE`]
 
 ## 👥 Geliştirici Ekibi
 
-- **Takım Adı:** Opti-Logistix Dev Team
-- **Proje Yöneticisi:** [Tarik Özküçük]
-- **AI/ML Lead:** [Takım Üyesi]
-- **Backend Lead:** [Takım Üyesi]
-
+- **Takım Adı:** Turan YZ
+- **Proje Yöneticisi:** Tarık Toplu
 ---
 
 ## 💬 İletişim & Destek
 
-- 📧 Email: [project@example.com]
-- 💬 Discord: [Sunucu Linki]
-- 📌 Issues: [GitHub Issues](https://github.com/yourusername/opti-logistix/issues)
+- 📧 Email: tarikttoplu@gmail.com
+- 📌 Issues: [GitHub Issues](https://github.com/tariktoplu/opti-logistix/issues)
 
 ---
-
-## 🌟 Teşekkürler
-
-- **OSMnx** ve **OpenStreetMap** topluluğu
-- **PyTorch Geometric** takımı
-- **Stable Baselines3** geliştiricileri
-
 ---
-
-**Son Güncelleme:** Ocak 2026  
-**Versiyon:** 0.1.0 (MVP)
-
 ```
 Made with ❤️ for disaster resilience
 ```
